@@ -44,15 +44,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
         void HandleRead() {
             //1. 接收socket的数据，放到缓冲区
             char buf[65536];
-            //单次读取量还要受缓冲区剩余容量约束，避免对端持续发送把内存撑满
-            uint64_t space = static_cast<uint64_t>(BUFFER_MAX_SIZE) - _in_buffer.ReadAbleSize();
-            if (space == 0) {
-                //接收缓冲区已达上限而数据仍未被消费，按异常连接处理
-                ERR_LOG("IN_BUFFER FULL, SHUTDOWN CONNECTION:%lu", (unsigned long)_conn_id);
-                return ShutdownInLoop();
-            }
-            uint64_t read_len = space < (sizeof(buf) - 1) ? space : (sizeof(buf) - 1);
-            ssize_t ret = _socket.NonBlockRecv(buf, read_len);
+            ssize_t ret = _socket.NonBlockRecv(buf, 65535);
             if (ret < 0) {
                 //-1对端已关闭写端(EOF)，-2接收出错：都走半关闭流程，
                 //先把接收缓冲区残留数据和待发送数据处理完，再释放连接
@@ -67,10 +59,8 @@ class Connection : public std::enable_shared_from_this<Connection> {
             //2. 调用message_callback进行业务处理
             if (_in_buffer.ReadAbleSize() > 0 && _message_callback) {
                 //shared_from_this--从当前对象自身获取自身的shared_ptr管理对象
-                _message_callback(shared_from_this(), &_in_buffer);
+                return _message_callback(shared_from_this(), &_in_buffer);
             }
-            //业务处理完毕，缓冲区已空且此前被撑大过则回收容量
-            _in_buffer.Shrink();
         }
         //描述符可写事件触发后调用的函数，将发送缓冲区中的数据进行发送
         void HandleWrite() {
@@ -137,11 +127,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
         //这个接口并不是实际的发送接口，而只是把数据放到了发送缓冲区，启动了可写事件监控
         void SendInLoop(Buffer &buf) {
             if (_statu == DISCONNECTED) return ;
-            if (_out_buffer.WriteBufferAndPush(buf) == false) {
-                //待发送数据超出缓冲区上限，连接已不可用，直接释放
-                ERR_LOG("OUT_BUFFER EXCEED LIMIT, RELEASE CONNECTION:%lu", (unsigned long)_conn_id);
-                return Release();
-            }
+            _out_buffer.WriteBufferAndPush(buf);
             if (_channel.WriteAble() == false) {
                 _channel.EnableWrite();
             }
@@ -225,10 +211,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
             //外界传入的data，可能是个临时的空间，我们现在只是把发送操作压入了任务池，有可能并没有被立即执行
             //因此有可能执行的时候，data指向的空间有可能已经被释放了。
             Buffer buf;
-            if (buf.WriteAndPush(data, len) == false) {
-                ERR_LOG("SEND DATA EXCEED LIMIT, DROP:%lu", (unsigned long)len);
-                return;
-            }
+            buf.WriteAndPush(data, len);
             _loop->RunInLoop(std::bind(&Connection::SendInLoop, this, std::move(buf)));
         }
         //提供给组件使用者的关闭接口--并不实际关闭，需要判断有没有数据待处理
