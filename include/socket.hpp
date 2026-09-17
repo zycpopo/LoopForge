@@ -73,19 +73,25 @@ class Socket {
             return newfd;
         }
         //接收数据
+        //返回值： >0 实际接收长度； 0 本次无数据可读； -1 对端已关闭写端(EOF)； -2 接收出错
         ssize_t Recv(void *buf, size_t len, int flag = 0) {
             // ssize_t recv(int sockfd, void *buf, size_t len, int flag);
             ssize_t ret = recv(_sockfd, buf, len, flag);
-            if (ret <= 0) {
-                //EAGAIN 当前socket的接收缓冲区中没有数据了，在非阻塞的情况下才会有这个错误
-                //EINTR  表示当前socket的阻塞等待，被信号打断了，
-                if (errno == EAGAIN || errno == EINTR) {
-                    return 0;//表示这次接收没有接收到数据
-                }
-                ERR_LOG("SOCKET RECV FAILED!!");
+            if (ret > 0) {
+                return ret; //实际接收的数据长度
+            }
+            if (ret == 0) {
+                //返回0表示对端已关闭写端，这是连接终止信号，不是"暂时无数据"
                 return -1;
             }
-            return ret; //实际接收的数据长度
+            //只有ret < 0时才去查看errno：
+            //EAGAIN/EWOULDBLOCK 当前socket的接收缓冲区中没有数据了，在非阻塞的情况下才会有这个错误
+            //EINTR  表示当前socket的阻塞等待，被信号打断了
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                return 0;//表示这次接收没有接收到数据
+            }
+            ERR_LOG("SOCKET RECV FAILED!!");
+            return -2;
         }
         ssize_t NonBlockRecv(void *buf, size_t len) {
             return Recv(buf, len, MSG_DONTWAIT); // MSG_DONTWAIT 表示当前接收为非阻塞。

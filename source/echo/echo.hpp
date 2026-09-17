@@ -1,4 +1,4 @@
-#include "../server.hpp"
+#include "server.hpp"
 
 class EchoServer {
     private:

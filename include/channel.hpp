@@ -31,12 +31,13 @@ class Channel {
         bool ReadAble() { return (_events & EPOLLIN); } 
         //当前是否监控了可写
         bool WriteAble() { return (_events & EPOLLOUT); }
-        //启动读事件监控
-        void EnableRead() { _events |= EPOLLIN; Update(); }
+        //启动读事件监控：必须一并注册EPOLLRDHUP，epoll只会自动上报EPOLLERR/EPOLLHUP,
+        //EPOLLRDHUP需要显式注册才会返回，否则HandleEvent里的对端半关闭分支永远不会命中
+        void EnableRead() { _events |= (EPOLLIN | EPOLLRDHUP); Update(); }
         //启动写事件监控
         void EnableWrite() { _events |= EPOLLOUT; Update(); }
         //关闭读事件监控
-        void DisableRead() { _events &= ~EPOLLIN; Update(); }
+        void DisableRead() { _events &= ~(EPOLLIN | EPOLLRDHUP); Update(); }
         //关闭写事件监控
         void DisableWrite() { _events &= ~EPOLLOUT; Update(); }
         //关闭所有事件监控

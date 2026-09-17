@@ -4,9 +4,11 @@
 #include <vector>
 #include <regex>
 #include <sys/stat.h>
-#include "../server.hpp"
+#include "server.hpp"
 
 #define DEFALT_TIMEOUT 10
+//单条请求正文的体积上限--防止客户端声称超大Content-Length耗尽服务端内存
+#define MAX_BODY (16 * 1024 * 1024)
 
 std::unordered_map<int, std::string> _statu_msg = {
     {100,  "Continue"},
@@ -385,15 +387,33 @@ class HttpRequest {
             }
             return it->second;
         }
-        //获取正文长度
+        //解析Content-Length的值，只接受纯数字，负号/空白/非数字一律判为非法
+        static bool ParseContentLength(const std::string &text, size_t *len) {
+            //19位十进制数一定小于size_t的最大值，先挡掉超长字串，避免累乘时溢出
+            if (text.empty() || text.size() > 19) {
+                return false;
+            }
+            size_t val = 0;
+            for (char c : text) {
+                if (c < '0' || c > '9') {
+                    return false;
+                }
+                val = val * 10 + static_cast<size_t>(c - '0');
+            }
+            *len = val;
+            return true;
+        }
+        //获取正文长度，头部缺失或头部非法时返回0
         size_t ContentLength() const {
             // Content-Length: 1234\r\n
-            bool ret = HasHeader("Content-Length");
-            if (ret == false) {
+            if (HasHeader("Content-Length") == false) {
                 return 0;
             }
-            std::string clen = GetHeader("Content-Length");
-            return std::stol(clen);
+            size_t len = 0;
+            if (ParseContentLength(GetHeader("Content-Length"), &len) == false) {
+                return 0;
+            }
+            return len;
         }
         //判断是否是短链接
         bool Close() const {
@@ -594,8 +614,20 @@ class HttpContext {
         }
         bool RecvHttpBody(Buffer *buf) {
             if (_recv_statu != RECV_HTTP_BODY) return false;
-            //1. 获取正文长度
-            size_t content_length = _request.ContentLength();
+            //1. 获取正文长度：头部缺失视为无正文；头部非法或超出上限则直接拒绝该请求
+            size_t content_length = 0;
+            if (_request.HasHeader("Content-Length") == true) {
+                if (HttpRequest::ParseContentLength(_request.GetHeader("Content-Length"), &content_length) == false) {
+                    _recv_statu = RECV_HTTP_ERROR;
+                    _resp_statu = 400;//BAD REQUEST
+                    return false;
+                }
+                if (content_length > MAX_BODY) {
+                    _recv_statu = RECV_HTTP_ERROR;
+                    _resp_statu = 413;//PAYLOAD TOO LARGE
+                    return false;
+                }
+            }
             if (content_length == 0) {
                 //没有正文，则请求接收解析完毕
                 _recv_statu = RECV_HTTP_OVER;
